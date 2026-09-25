@@ -41,7 +41,7 @@ if audio_bytes:
     st.audio(audio_bytes, format="audio/wav")
     st.divider()
     
-    with st.spinner("波形ピーク・周波数特性・ひずみを解析中..."):
+    with st.spinner("波形ピーク・子音特性・ひずみを解析中..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_path = tmp_file.name
@@ -74,42 +74,58 @@ if audio_bytes:
                 intervals_sec = np.diff(peaks) / sr
                 cv_interval = (np.std(intervals_sec) / np.mean(intervals_sec)) * 100
                 
-                # 4. 【新規】音響特徴量の抽出（各ピーク周辺の周波数重心とノイズ率）
-                centroids = []
+                peak_amplitudes = envelope[peaks]
+                peak_numbers = np.arange(1, count + 1)
+                slope, intercept = np.polyfit(peak_numbers, peak_amplitudes, 1)
+                
+                n_samples = min(3, max(1, count // 2))
+                first_mean = np.mean(peak_amplitudes[:n_samples])
+                last_mean = np.mean(peak_amplitudes[-n_samples:])
+                decay_rate = ((first_mean - last_mean) / first_mean) * 100 if first_mean > 0 else 0
+                
+                # 4. 【改良】音響特徴量の抽出（子音の抽出に特化）
+                consonant_features = []
                 distortions = []
                 
+                # スマホのマイク特有のこもりを消し、子音（高音域）を強調するプレエンファシス処理
+                y_pre = librosa.effects.preemphasis(y)
+                
                 for p in peaks:
-                    # ピークの少し前（子音部）からピーク後（母音部）までを切り出す
-                    start_idx = max(0, p - int(0.02 * sr))
-                    end_idx = min(len(y), p + int(0.05 * sr))
-                    segment = y[start_idx:end_idx]
+                    # ピーク（母音ア）の「直前」の波形を切り出す
+                    # 破裂音の瞬間を捉えるため、ピークの40msec前から、10msec後までを抽出
+                    start_idx = max(0, p - int(0.04 * sr))
+                    end_idx = min(len(y), p + int(0.01 * sr))
+                    segment_consonant = y_pre[start_idx:end_idx]
                     
-                    if len(segment) > 0:
-                        # 周波数の重心（高いほど「タ」寄り、低いほど「パ」寄り）
-                        cent = np.mean(librosa.feature.spectral_centroid(y=segment, sr=sr))
-                        centroids.append(cent)
-                        # スペクトル平坦度（ノイズ成分＝構音のひずみ率として代用）
-                        flat = np.mean(librosa.feature.spectral_flatness(y=segment))
-                        distortions.append(flat * 1000) # 見やすいようにスケール調整
+                    if len(segment_consonant) > 0:
+                        # ゼロクロッシング率（ZCR: タ(高) > カ(中) > パ(低) となる特性を利用）
+                        zcr = np.mean(librosa.feature.zero_crossing_rate(segment_consonant))
+                        consonant_features.append(zcr)
+                        
+                        # ひずみ（息漏れ）は、母音を含めた少し長めの範囲で計測
+                        start_dist = max(0, p - int(0.02 * sr))
+                        end_dist = min(len(y), p + int(0.05 * sr))
+                        flat = np.mean(librosa.feature.spectral_flatness(y=y[start_dist:end_dist]))
+                        distortions.append(flat * 1000)
                     else:
-                        centroids.append(0)
+                        consonant_features.append(0)
                         distortions.append(0)
                 
-                centroids = np.array(centroids)
+                centroids = np.array(consonant_features)
                 distortions = np.array(distortions)
                 
-                # 5. 【新規】K-Means法による パ・タ・カ 自動分類
+                # 5. K-Means法による パ・タ・カ 自動分類
                 syllable_counts = {"パ": 0, "タ": 0, "カ": 0, "合計": count}
                 labels = np.zeros(count)
                 colors = ['red'] * count
                 
                 if test_mode == "パタカ交互反復 (SMR)" and count >= 3:
-                    # 重心データをもとに3つのクラスターに分類
+                    # ZCRデータをもとに3つのクラスターに分類
                     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
                     labels = kmeans.fit_predict(centroids.reshape(-1, 1))
                     cluster_centers = kmeans.cluster_centers_.flatten()
                     
-                    # 重心の低い順に並べ替え（0:パ, 1:カ, 2:タ に該当）
+                    # ZCRの低い順に並べ替え（0:パ, 1:カ, 2:タ に該当）
                     sorted_idx = np.argsort(cluster_centers)
                     
                     pa_label = sorted_idx[0]
@@ -133,14 +149,14 @@ if audio_bytes:
                 
                 col1, col2 = st.columns(2)
                 col1.metric("🗣️ 総発音回数", f"{count} 回")
-                col2.metric("⏱️ リズムCV値 (ばらつき)", f"{cv_interval:.1f} %")
+                col2.metric("⏱️ リズムCV値 (ばらつき)", f"{cv_interval:.1f} %", "15%未満が目安", delta_color="off")
                 
                 col3, col4 = st.columns(2)
                 col3.metric("⚠️ 平均ひずみ率 (ノイズ量)", f"{avg_distortion:.1f}", "高いほど息漏れ/不明瞭", delta_color="inverse")
                 col4.metric("⏱️ 測定時間目安", f"{(len(y)/sr):.1f} 秒")
                 
                 if test_mode == "パタカ交互反復 (SMR)":
-                    st.markdown("**音節別の推測回数（周波数特性による分類）**")
+                    st.markdown("**音節別の推測回数（子音特性による分類）**")
                     sc1, sc2, sc3 = st.columns(3)
                     sc1.metric("👄 パ (両唇音)", f"{syllable_counts['パ']} 回")
                     sc2.metric("👅 タ (歯茎音)", f"{syllable_counts['タ']} 回")
@@ -153,12 +169,12 @@ if audio_bytes:
                 st.subheader("📈 音響特性マップ & 波形")
                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8))
                 
-                # トレンドグラフ（時間 vs 周波数重心・ひずみ）
+                # トレンドグラフ（時間 vs ZCR・ひずみ）
                 time_points = peaks / sr
                 scatter = ax1.scatter(time_points, centroids, c=colors, s=distortions*10 + 20, alpha=0.7)
                 ax1.plot(time_points, centroids, color='gray', linestyle=':', alpha=0.5)
-                ax1.set_title("Syllable Map (Y: Frequency Centroid, Size: Distortion)")
-                ax1.set_ylabel("Spectral Centroid (Hz)")
+                ax1.set_title("Syllable Map (Y: Zero Crossing Rate, Size: Distortion)")
+                ax1.set_ylabel("Zero Crossing Rate (ZCR)")
                 
                 # 波形グラフ
                 time_axis = np.arange(len(y)) / sr
@@ -169,7 +185,7 @@ if audio_bytes:
                 for t, a, c in zip(time_points, envelope[peaks], colors):
                     ax2.plot(t, a, "x", color=c, markersize=8, markeredgewidth=2)
                     
-                ax2.set_title("Waveform & Detected Syllables")
+                ax2.set_title("Waveform & Detected Syllables (Consonant Targeted)")
                 ax2.set_xlabel("Time (sec)")
                 
                 plt.tight_layout()
@@ -180,3 +196,5 @@ if audio_bytes:
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+else:
+    st.info("上のマイクアイコンをタップして検査を開始してください。")
