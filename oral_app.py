@@ -10,7 +10,6 @@ from audio_recorder_streamlit import audio_recorder
 # ==========================================
 # ページ設定
 # ==========================================
-# アプリのコードネーム [oral] を意識したタイトル設定
 st.set_page_config(page_title="[oral] Diadochokinesis Analyzer", page_icon="👄", layout="centered")
 
 st.title("👄 [oral]")
@@ -32,7 +31,6 @@ with st.sidebar:
 # メイン: スマホマイクからの録音
 # ==========================================
 st.write("👇 下のマイクアイコンをタップして検査開始 / 停止")
-# スマホでも動作しやすい録音コンポーネント
 audio_bytes = audio_recorder(text="タップして録音", recording_color="#ff4b4b", neutral_color="#4b4bff")
 
 # ==========================================
@@ -44,7 +42,6 @@ if audio_bytes:
     st.divider()
     
     with st.spinner("音声波形を解析中..."):
-        # バイトデータを一時ファイルに保存
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
             tmp_file.write(audio_bytes)
             tmp_path = tmp_file.name
@@ -62,7 +59,14 @@ if audio_bytes:
             # 2. ピーク（発音）検出
             threshold_height = np.max(envelope) * threshold_ratio
             min_distance = int(min_distance_sec * sr)
-            peaks, _ = find_peaks(envelope, height=threshold_height, distance=min_distance)
+            
+            # 【改良版】プロミネンスを追加し、独立した破裂音だけを正確に拾う
+            peaks, _ = find_peaks(
+                envelope, 
+                height=threshold_height, 
+                distance=min_distance, 
+                prominence=threshold_height * 0.5
+            )
             count = len(peaks)
             
             if count < 3:
@@ -79,7 +83,6 @@ if audio_bytes:
                 n_samples = min(3, max(1, count // 2))
                 first_mean = np.mean(peak_amplitudes[:n_samples])
                 last_mean = np.mean(peak_amplitudes[-n_samples:])
-                # ゼロ除算対策
                 decay_rate = ((first_mean - last_mean) / first_mean) * 100 if first_mean > 0 else 0
 
                 # ==========================================
@@ -87,7 +90,6 @@ if audio_bytes:
                 # ==========================================
                 st.subheader("📊 [oral] 解析結果")
                 
-                # Streamlitのmetricはスマホ画面幅に合わせて自動で縦積み/横並びになります
                 col1, col2 = st.columns(2)
                 col1.metric("🗣️ 発音回数", f"{count} 回")
                 col2.metric("⏱️ リズムCV値", f"{cv_interval:.1f} %", "15%未満が目安", delta_color="off")
@@ -108,7 +110,7 @@ if audio_bytes:
                 ax1.plot(time_axis, envelope, label='Envelope', color='blue')
                 ax1.plot(peaks / sr, peak_amplitudes, "x", color='red', markersize=8)
                 ax1.axhline(y=threshold_height, color='green', linestyle=':', label='Threshold')
-                ax1.set_title("[oral] Waveform & Peak Detection")
+                ax1.set_title("[oral] Waveform & Peak Detection (Prominence Applied)")
                 ax1.set_xlabel("Time (sec)")
                 ax1.set_ylabel("Amplitude")
                 
@@ -120,7 +122,6 @@ if audio_bytes:
                 ax2.set_ylabel("Amplitude")
                 
                 plt.tight_layout()
-                # use_container_width=True でスマホの横幅にピッタリ合わせる
                 st.pyplot(fig, use_container_width=True)
 
         except Exception as e:
