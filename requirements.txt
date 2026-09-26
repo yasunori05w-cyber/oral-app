@@ -5,3 +5,5 @@ librosa
 matplotlib
 audio-recorder-streamlit
 scikit-learn
+praat-parselmouth
+joblib
